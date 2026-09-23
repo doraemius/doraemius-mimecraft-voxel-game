@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Green Floor</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: skyblue;
+        }
+        canvas { 
+            display: block; 
+        }
+    </style>
+</head>
+<body>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Simple deterministic noise function
+        function noise(x, y) {
+            // Simple hash function to generate pseudo-random values
+            let n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+            return n - Math.floor(n);
+        }
+
+        // Scene setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('skyblue');
+        
+        // Camera
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        
+        // Renderer
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        
+        // Create terrain with height variation
+        const terrainSize = 32;
+        const blockSize = 1;
+        const geometry = new THREE.PlaneGeometry(terrainSize, terrainSize, terrainSize, terrainSize);
+        const material = new THREE.MeshPhongMaterial({ 
+            color: 0x00ff00,
+            side: THREE.DoubleSide
+        });
+        const floor = new THREE.Mesh(geometry, material);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = 0;
+        scene.add(floor);
+        
+        // Add grid helper for reference
+        const gridHelper = new THREE.GridHelper(terrainSize, terrainSize);
+        gridHelper.position.y = 0.01;
+        scene.add(gridHelper);
+        
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+        
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(1, 1, 1);
+        scene.add(directionalLight);
+        
+        // Create terrain blocks with height variation
+        const blockGeometry = new THREE.BoxGeometry(blockSize, blockSize, blockSize);
+        const grassMaterial = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
+        const dirtMaterial = new THREE.MeshPhongMaterial({ color: 0x8B4513 });
+        
+        const terrain = [];
+        let maxHeight = 0;
+        
+        for (let x = 0; x < terrainSize; x++) {
+            terrain[x] = [];
+            for (let z = 0; z < terrainSize; z++) {
+                // Generate height using noise function
+                const height = Math.floor(noise(x * 0.2, z * 0.2) * 8);
+                if (height > maxHeight) maxHeight = height;
+                
+                terrain[x][z] = height;
+                
+                // Create dirt blocks
+                for (let y = 0; y < height; y++) {
+                    const block = new THREE.Mesh(blockGeometry, dirtMaterial);
+                    block.position.set(x - terrainSize/2 + 0.5, y + 0.5, z - terrainSize/2 + 0.5);
+                    scene.add(block);
+                }
+                
+                // Create grass block on top
+                if (height > 0) {
+                    const grassBlock = new THREE.Mesh(blockGeometry, grassMaterial);
+                    grassBlock.position.set(x - terrainSize/2 + 0.5, height + 0.5, z - terrainSize/2 + 0.5);
+                    scene.add(grassBlock);
+                } else {
+                    // If no height, still place a grass block at y=0.5
+                    const grassBlock = new THREE.Mesh(blockGeometry, grassMaterial);
+                    grassBlock.position.set(x - terrainSize/2 + 0.5, 0.5, z - terrainSize/2 + 0.5);
+                    scene.add(grassBlock);
+                }
+            }
+        }
+        
+        // Position camera above highest terrain
+        camera.position.set(terrainSize/2, maxHeight + 8, terrainSize/2);
+        camera.lookAt(terrainSize/2, 0, terrainSize/2);
+        
+        // First-person controls
+        const moveForward = false;
+        const moveBackward = false;
+        const moveLeft = false;
+        const moveRight = false;
+        const canJump = false;
+        
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        const prevTime = performance.now();
+        let isPointerLocked = false;
+        let playerHeight = 1.8;
+        let gravity = -9.8;
+        let jumpVelocity = 0;
+        let onGround = false;
+        
+        // Event listeners for keyboard
+        document.addEventListener('keydown', (event) => {
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'Space': 
+                    if (onGround) {
+                        jumpVelocity = 8;
+                        onGround = false;
+                    }
+                    break;
+            }
+        });
+        
+        document.addEventListener('keyup', (event) => {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        });
+        
+        // Mouse look
+        document.addEventListener('click', () => {
+            if (!isPointerLocked) {
+                renderer.domElement.requestPointerLock();
+            }
+        });
+        
+        document.addEventListener('pointerlockchange', () => {
+            isPointerLocked = (document.pointerLockElement === renderer.domElement);
+        });
+        
+        document.addEventListener('mousemove', (event) => {
+            if (isPointerLocked) {
+                camera.rotation.y -= event.movementX * 0.002;
+                camera.rotation.x -= event.movementY * 0.002;
+                // Clamp vertical rotation to prevent flipping
+                camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x));
+            }
+        });
+        
+        // Raycaster for terrain collision
+        const raycaster = new THREE.Raycaster();
+        const tempVector = new THREE.Vector3();
+        
+        function getTerrainHeightAt(x, z) {
+            const gridX = Math.floor(x + terrainSize/2);
+            const gridZ = Math.floor(z + terrainSize/2);
+            
+            if (gridX >= 0 && gridX < terrainSize && gridZ >= 0 && gridZ < terrainSize) {
+                return terrain[gridX][gridZ];
+            }
+            return 0;
+        }
+        
+        function updatePlayerPosition(delta) {
+            // Apply gravity
+            jumpVelocity += gravity * delta;
+            velocity.y = jumpVelocity;
+            
+            // Movement direction relative to camera
+            direction.z = Number(moveForward) - Number(moveBackward);
+            direction.x = Number(moveRight) - Number(moveLeft);
+            direction.normalize();
+            
+            // Move relative to camera direction
+            const speed = 10;
+            velocity.x = direction.x * speed;
+            velocity.z = direction.z * speed;
+            
+            // Apply movement
+            camera.position.x += velocity.x * delta;
+            camera.position.y += velocity.y * delta;
+            camera.position.z += velocity.z * delta;
+            
+            // Check if player is on terrain
+            const playerX = camera.position.x;
+            const playerZ = camera.position.z;
+            const playerY = camera.position.y;
+            
+            const terrainHeight = getTerrainHeightAt(playerX, playerZ);
+            const groundLevel = terrainHeight + 0.5;
+            
+            // Collision detection
+            if (playerY < groundLevel) {
+                camera.position.y = groundLevel;
+                velocity.y = 0;
+                jumpVelocity = 0;
+                onGround = true;
+            } else {
+                onGround = false;
+            }
+        }
+        
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const time = performance.now();
+            const delta = Math.min(0.05, (time - prevTime) / 1000);
+            prevTime = time;
+            
+            updatePlayerPosition(delta);
+            renderer.render(scene, camera);
+        }
+        
+        animate();
+    </script>
+</body>
+</html>

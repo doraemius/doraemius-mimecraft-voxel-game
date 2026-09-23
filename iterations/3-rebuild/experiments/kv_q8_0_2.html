@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Biome Terrain</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: skyblue;
+        }
+        canvas { 
+            display: block; 
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            pointer-events: none;
+            z-index: 100;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: white;
+            box-shadow: 0 0 2px rgba(0,0,0,0.8);
+        }
+        #crosshair::before {
+            width: 20px;
+            height: 2px;
+            top: 9px;
+            left: 0;
+        }
+        #crosshair::after {
+            width: 2px;
+            height: 20px;
+            top: 0;
+            left: 9px;
+        }
+    </style>
+</head>
+<body>
+    <div id="crosshair"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Simple deterministic noise function
+        function noise(x, y) {
+            // Simple hash function to generate pseudo-random values
+            let n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+            return n - Math.floor(n);
+        }
+
+        // Scene setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('skyblue');
+        
+        // Camera
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        
+        // Renderer
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        
+        // Create terrain with height variation
+        const terrainSize = 32;
+        const blockSize = 1;
+        const geometry = new THREE.PlaneGeometry(terrainSize, terrainSize, terrainSize, terrainSize);
+        const material = new THREE.MeshPhongMaterial({ 
+            color: 0x00ff00,
+            side: THREE.DoubleSide
+        });
+        const floor = new THREE.Mesh(geometry, material);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = 0;
+        scene.add(floor);
+        
+        // Add grid helper for reference
+        const gridHelper = new THREE.GridHelper(terrainSize, terrainSize);
+        gridHelper.position.y = 0.01;
+        scene.add(gridHelper);
+        
+        // Lighting
+        // Warm directional light low in the sky
+        const directionalLight = new THREE.DirectionalLight(0xffaa66, 1.0);
+        directionalLight.position.set(1, 2, 1);
+        directionalLight.castShadow = true;
+        scene.add(directionalLight);
+        
+        // Cooler ambient light
+        const ambientLight = new THREE.AmbientLight(0x66aaff, 0.4);
+        scene.add(ambientLight);
+        
+        // Create terrain blocks with height variation
+        const blockGeometry = new THREE.BoxGeometry(blockSize, blockSize, blockSize);
+        
+        // Materials for different biomes with custom shading
+        const sandMaterial = new THREE.MeshPhongMaterial({ 
+            color: 0xF4A460,
+            shininess: 30
+        });
+        const grassMaterial = new THREE.MeshPhongMaterial({ 
+            color: 0x228B22,
+            shininess: 30
+        });
+        const stoneMaterial = new THREE.MeshPhongMaterial({ 
+            color: 0x808080,
+            shininess: 30
+        });
+        const snowMaterial = new THREE.MeshPhongMaterial({ 
+            color: 0xFFFFFF,
+            shininess: 30
+        });
+        const waterMaterial = new THREE.MeshPhongMaterial({ 
+            color: 0x1E90FF,
+            shininess: 50,
+            transparent: true,
+            opacity: 0.8
+        });
+        
+        const terrain = [];
+        let maxHeight = 0;
+        const seaLevel = 2;
+        
+        // Generate terrain heights
+        for (let x = 0; x < terrainSize; x++) {
+            terrain[x] = [];
+            for (let z = 0; z < terrainSize; z++) {
+                // Generate height using noise function
+                const height = Math.floor(noise(x * 0.2, z * 0.2) * 10);
+                if (height > maxHeight) maxHeight = height;
+                
+                terrain[x][z] = height;
+                
+                // Create blocks based on height and biome
+                for (let y = 0; y < height; y++) {
+                    let blockMaterial;
+                    
+                    // Determine biome based on height
+                    if (y < seaLevel) {
+                        // Water
+                        blockMaterial = waterMaterial;
+                    } else if (y < seaLevel + 1) {
+                        // Sand
+                        blockMaterial = sandMaterial;
+                    } else if (y < seaLevel + 3) {
+                        // Grass
+                        blockMaterial = grassMaterial;
+                    } else if (y < maxHeight - 2) {
+                        // Stone
+                        blockMaterial = stoneMaterial;
+                    } else {
+                        // Snow
+                        blockMaterial = snowMaterial;
+                    }
+                    
+                    const block = new THREE.Mesh(blockGeometry, blockMaterial);
+                    block.position.set(x - terrainSize/2 + 0.5, y + 0.5, z - terrainSize/2 + 0.5);
+                    scene.add(block);
+                }
+                
+                // Create water blocks below sea level
+                for (let y = 0; y < seaLevel; y++) {
+                    const waterBlock = new THREE.Mesh(blockGeometry, waterMaterial);
+                    waterBlock.position.set(x - terrainSize/2 + 0.5, y + 0.5, z - terrainSize/2 + 0.5);
+                    scene.add(waterBlock);
+                }
+            }
+        }
+        
+        // Player state
+        const player = {
+            position: new THREE.Vector3(0, 0, 0),
+            velocity: new THREE.Vector3(0, 0, 0),
+            rotation: new THREE.Euler(0, 0, 0),
+            onGround: false,
+            eyeHeight: 1.6
+        };
+        
+        // Movement state
+        const moveState = {
+            forward: false,
+            backward: false,
+            left: false,
+            right: false,
+            jump: false
+        };
+        
+        // Mouse state
+        let mouseLocked = false;
+        const mouseSensitivity = 0.002;
+        let mouseX = 0;
+        let mouseY = 0;
+        
+        // Physics constants
+        const gravity = -9.8;
+        const jumpForce = 8;
+        const moveSpeed = 5;
+        
+        // Find valid spawn position
+        function findValidSpawn() {
+            let centerX = Math.floor(terrainSize / 2);
+            let centerZ = Math.floor(terrainSize / 2);
+            
+            // Check if current center is valid
+            let surfaceHeight = terrain[centerX][centerZ];
+            let valid = true;
+            
+            // Check surrounding columns
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const x = centerX + dx;
+                    const z = centerZ + dz;
+                    if (x >= 0 && x < terrainSize && z >= 0 && z < terrainSize) {
+                        const height = terrain[x][z];
+                        if (height > surfaceHeight + 1) {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+                if (!valid) break;
+            }
+            
+            // If not valid, find a better position
+            if (!valid) {
+                // Search for a flat area
+                for (let x = 0; x < terrainSize; x++) {
+                    for (let z = 0; z < terrainSize; z++) {
+                        const height = terrain[x][z];
+                        let isFlat = true;
+                        
+                        // Check neighbors
+                        for (let dx = -1; dx <= 1; dx++) {
+                            for (let dz = -1; dz <= 1; dz++) {
+                                const nx = x + dx;
+                                const nz = z + dz;
+                                if (nx >= 0 && nx < terrainSize && nz >= 0 && nz < terrainSize) {
+                                    const neighborHeight = terrain[nx][nz];
+                                    if (Math.abs(neighborHeight - height) > 1) {
+                                        isFlat = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!isFlat) break;
+                        }
+                        
+                        if (isFlat) {
+                            centerX = x;
+                            centerZ = z;
+                            surfaceHeight = height;
+                            break;
+                        }
+                    }
+                    if (centerX !== Math.floor(terrainSize / 2)) break;
+                }
+            }
+            
+            return { x: centerX, z: centerZ, height: surfaceHeight };
+        }
+        
+        // Initialize player position
+        function initPlayer() {
+            const spawn = findValidSpawn();
+            const surfaceHeight = spawn.height;
+            
+            // Place player one block above surface plus eye height
+            player.position.set(
+                spawn.x - terrainSize/2 + 0.5,
+                surfaceHeight + player.eyeHeight,
+                spawn.z - terrainSize/2 + 0.5
+            );
+            
+            camera.position.copy(player.position);
+            camera.lookAt(
+                spawn.x - terrainSize/2 + 0.5,
+                surfaceHeight + player.eyeHeight,
+                spawn.z - terrainSize/2 + 0.5 + 1
+            );
+            player.rotation.y = 0;
+        }
+        
+        // Get surface height at player position
+        function getSurfaceHeight(x, z) {
+            const gridX = Math.floor(x + terrainSize/2);
+            const gridZ = Math.floor(z + terrainSize/2);
+            
+            // Clamp to terrain bounds
+            if (gridX < 0 || gridX >= terrainSize || gridZ < 0 || gridZ >= terrainSize) {
+                return -Infinity; // Out of range - impassable wall
+            }
+            
+            // Scan for highest solid block in column instead of using stored height
+            let maxHeight = -Infinity;
+            const worldX = x + terrainSize/2 - 0.5;
+            const worldZ = z + terrainSize/2 - 0.5;
+            
+            // Check all blocks in this column
+            for (let y = 0; y < maxHeight + 10; y++) {
+                const blockPos = new THREE.Vector3(worldX, y, worldZ);
+                const block = scene.children.find(child => {
+                    if (!child.isMesh) return false;
+                    return Math.abs(child.position.x - blockPos.x) < 0.6 &&
+                           Math.abs(child.position.y - blockPos.y) < 0.6 &&
+                           Math.abs(child.position.z - blockPos.z) < 0.6;
+                });
+                
+                if (block) {
+                    maxHeight = Math.max(maxHeight, y);
+                } else {
+                    // If no block found at this Y level, we've found the surface
+                    break;
+                }
+            }
+            
+            return maxHeight;
+        }
+        
+        // Handle collisions
+        function handleCollisions() {
+            const surfaceHeight = getSurfaceHeight(player.position.x, player.position.z);
+            const feetY = player.position.y - player.eyeHeight;
+            const headY = player.position.y + player.eyeHeight;
+            
+            // Ground collision
+            if (feetY < surfaceHeight) {
+                player.position.y = surfaceHeight + player.eyeHeight;
+                player.velocity.y = 0;
+                player.onGround = true;
+            } else {
+                player.onGround = false;
+            }
+            
+            // Ceiling collision
+            const ceilingHeight = getSurfaceHeight(player.position.x, player.position.z);
+            if (headY > ceilingHeight) {
+                player.position.y = ceilingHeight - player.eyeHeight;
+                player.velocity.y = 0;
+            }
+            
+            // Clamp to world bounds
+            player.position.x = Math.max(-terrainSize/2 + 0.5, Math.min(terrainSize/2 - 0.5, player.position.x));
+            player.position.z = Math.max(-terrainSize/2 + 0.5, Math.min(terrainSize/2 - 0.5, player.position.z));
+        }
+        
+        // Handle keyboard input
+        document.addEventListener('keydown', (event) => {
+            switch(event.key.toLowerCase()) {
+                case 'w': moveState.forward = true; break;
+                case 's': moveState.backward = true; break;
+                case 'a': moveState.left = true; break;
+                case 'd': moveState.right = true; break;
+                case ' ': 
+                    if (player.onGround) {
+                        player.velocity.y = jumpForce;
+                        player.onGround = false;
+                    }
+                    break;
+            }
+        });
+        
+        document.addEventListener('keyup', (event) => {
+            switch(event.key.toLowerCase()) {
+                case 'w': moveState.forward = false; break;
+                case 's': moveState.backward = false; break;
+                case 'a': moveState.left = false; break;
+                case 'd': moveState.right = false; break;
+            }
+        });
+        
+        // Handle mouse click for pointer lock
+        document.addEventListener('click', () => {
+            if (!mouseLocked) {
+                renderer.domElement.requestPointerLock();
+            }
+        });
+        
+        // Handle pointer lock change
+        document.addEventListener('pointerlockchange', () => {
+            mouseLocked = document.pointerLockElement === renderer.domElement;
+        });
+        
+        // Handle mouse movement
+        document.addEventListener('mousemove', (event) => {
+            if (mouseLocked) {
+                player.rotation.y -= event.movementX * mouseSensitivity;
+                player.rotation.x -= event.movementY * mouseSensitivity;
+                
+                // Clamp pitch to avoid flipping
+                player.rotation.x = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, player.rotation.x));
+            }
+        });
+        
+        // Raycaster for block interaction
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        
+        // Handle mouse clicks
+        document.addEventListener('mousedown', (event) => {
+            if (!mouseLocked) return;
+            
+            // Calculate mouse position in normalized device coordinates
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            // Update the picking ray with the camera and mouse position
+            raycaster.setFromCamera(mouse, camera);
+            
+            // Calculate objects intersecting the picking ray
+            const intersects = raycaster.intersectObjects(scene.children);
+            
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                
+                if (event.button === 0) { // Left click - remove block
+                    // Remove the block that was hit
+                    scene.remove(intersect.object);
+                } else if (event.button === 2) { // Right click - place block
+                    // Create a new block at the hit position
+                    const block = new THREE.Mesh(blockGeometry, sandMaterial);
+                    
+                    // Position the block against the face that was hit
+                    const face = intersect.face;
+                    const normal = face.normal;
+                    const position = intersect.point.clone().add(normal.clone().multiplyScalar(0.5));
+                    
+                    // Snap to grid
+                    position.x = Math.round(position.x);
+                    position.y = Math.round(position.y);
+                    position.z = Math.round(position.z);
+                    
+                    block.position.copy(position);
+                    scene.add(block);
+                }
+            }
+        });
+        
+        // Create trees
+        function createTree(x, z) {
+            // Get surface height at this position
+            const surfaceHeight = terrain[Math.floor(x + terrainSize/2)][Math.floor(z + terrainSize/2)];
+            
+            // Create trunk (4 blocks tall)
+            const trunkGeometry = new THREE.BoxGeometry(0.5, 4, 0.5);
+            const trunkMaterial = new THREE.MeshPhongMaterial({ color: 0x8B4513 }); // Brown trunk
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunk.position.set(x, surfaceHeight + 2, z);
+            scene.add(trunk);
+            
+            // Create canopy (green leaves)
+            const canopyGeometry = new THREE.SphereGeometry(1.5, 8, 8);
+            const canopyMaterial = new THREE.MeshPhongMaterial({ color: 0x228B22 }); // Green leaves
+            const canopy = new THREE.Mesh(canopyGeometry, canopyMaterial);
+            canopy.position.set(x, surfaceHeight + 5, z);
+            scene.add(canopy);
+        }
+        
+        // Place 12 trees on grass columns
+        const treePositions = [
+            {x: -8, z: -8},
+            {x: -4, z: -10},
+            {x: 2, z: -12},
+            {x: 8, z: -6},
+            {x: 10, z: 0},
+            {x: 6, z: 8},
+            {x: 0, z: 10},
+            {x: -6, z: 12},
+            {x: -10, z: 6},
+            {x: -12, z: 2},
+            {x: -2, z: -14},
+            {x: 14, z: -4}
+        ];
+        
+        // Place trees only on grass columns
+        treePositions.forEach(pos => {
+            const gridX = Math.floor(pos.x + terrainSize/2);
+            const gridZ = Math.floor(pos.z + terrainSize/2);
+            
+            // Check if this position is valid (on grass)
+            if (gridX >= 0 && gridX < terrainSize && gridZ >= 0 && gridZ < terrainSize) {
+                const height = terrain[gridX][gridZ];
+                // Check if the surface is grass (height >= seaLevel + 1 and < seaLevel + 3)
+                if (height >= seaLevel + 1 && height < seaLevel + 3) {
+                    createTree(pos.x, pos.z);
+                }
+            }
+        });
+        
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Apply gravity
+            player.velocity.y += gravity * 0.016; // Assuming 60fps
+            
+            // Handle movement
+            const moveX = (moveState.right ? 1 : 0) + (moveState.left ? -1 : 0);
+            const moveZ = (moveState.forward ? 1 : 0) + (moveState.backward ? -1 : 0);
+            
+            // Move relative to camera direction
+            const forward = new THREE.Vector3(0, 0, 1);
+            forward.applyEuler(player.rotation);
+            forward.y = 0;
+            forward.normalize();
+            
+            const right = new THREE.Vector3(1, 0, 0);
+            right.applyEuler(player.rotation);
+            right.y = 0;
+            right.normalize();
+            
+            const moveVector = new THREE.Vector3();
+            moveVector.addScaledVector(forward, moveZ);
+            moveVector.addScaledVector(right, moveX);
+            moveVector.multiplyScalar(moveSpeed * 0.016);
+            
+            player.position.x += moveVector.x;
+            player.position.z += moveVector.z;
+            player.position.y += player.velocity.y * 0.016;
+            
+            // Handle collisions
+            handleCollisions();
+            
+            // Update camera position and rotation
+            camera.position.copy(player.position);
+            camera.rotation.copy(player.rotation);
+            
+            renderer.render(scene, camera);
+        }
+        
+        initPlayer();
+        animate();
+    </script>
+</body>
+</html>

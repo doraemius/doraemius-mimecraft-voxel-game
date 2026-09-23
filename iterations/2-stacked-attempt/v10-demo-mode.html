@@ -1,0 +1,1282 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Minecraft-Style Voxel World</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: monospace;
+        }
+        #info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            font-size: 14px;
+            z-index: 10;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            margin-left: -10px;
+            margin-top: -10px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255,255,255,0.8);
+        }
+        #crosshair::before {
+            width: 2px;
+            height: 20px;
+            left: 9px;
+            top: 0;
+        }
+        #crosshair::after {
+            width: 20px;
+            height: 2px;
+            left: 0;
+            top: 9px;
+        }
+        #vignette {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 5;
+            background: radial-gradient(circle at center, transparent 0%, rgba(0,0,0,0.7) 70%);
+            opacity: 0.7;
+        }
+        #heldBlock {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 40px;
+            height: 40px;
+            z-index: 10;
+            border: 2px solid black;
+            background: rgba(0,0,0,0.3);
+        }
+        #blockSelector {
+            position: absolute;
+            width: 1.1;
+            height: 1.1;
+            border: 2px solid black;
+            pointer-events: none;
+            z-index: 9;
+        }
+        #healthBar {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 200px;
+            height: 20px;
+            background: rgba(0,0,0,0.5);
+            border: 2px solid white;
+        }
+        #healthFill {
+            height: 100%;
+            background: red;
+            width: 100%;
+        }
+        #modeIndicator {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 5px;
+            font-size: 14px;
+            z-index: 10;
+        }
+        #sword {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 20px;
+            height: 20px;
+            background: rgba(255,255,255,0.5);
+            z-index: 10;
+            display: none;
+        }
+        #guardIndicator {
+            position: absolute;
+            top: 50px;
+            right: 20px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 5px;
+            font-size: 14px;
+            z-index: 10;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="crosshair"></div>
+    <div id="info">
+        WASD: Move | Mouse: Look | Space: Jump | Left Click: Remove | Right Click: Place | 1-5: Select Block | Shift: Sprint | Double-tap: Dodge | Right-click: Guard
+    </div>
+    <div id="vignette"></div>
+    <div id="heldBlock"></div>
+    <div id="blockSelector"></div>
+    <div id="healthBar">
+        <div id="healthFill"></div>
+    </div>
+    <div id="modeIndicator">Mode: Build</div>
+    <div id="sword"></div>
+    <div id="guardIndicator">GUARD</div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Main variables
+        let scene, camera, renderer, controls;
+        let world = {};
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+        let clock = new THREE.Clock();
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        let canJump = true;
+        let velocity = new THREE.Vector3();
+        let prevTime = performance.now();
+        let worldSize = 64;
+        let blockSize = 1;
+        let worldHalfSize = worldSize / 2;
+        let gravity = 9.8;
+        let jumpStrength = 5;
+        let moveSpeed = 5;
+        let blockGeometry = new THREE.BoxGeometry(1, 1, 1);
+        let materials = {};
+        let skyMaterial;
+        let skySphere;
+        let ambientLight, directionalLight;
+        let selectedBlockType = 0;
+        let blockTypes = [
+            { name: "Grass", color: 0x4CAF50 },
+            { name: "Dirt", color: 0x8B4513 },
+            { name: "Sand", color: 0xF4A460 },
+            { name: "Stone", color: 0x808080 },
+            { name: "Snow", color: 0xFFFFFF }
+        ];
+        let waterLevel = 2;
+        let blockSelector;
+        let heldBlockMesh;
+        let playerHp = 20;
+        let isGuarding = false;
+        let isSprinting = false;
+        let lastDodgeTime = 0;
+        let dodgeCooldown = 500;
+        let swordSwinging = false;
+        let swordMesh;
+        let enemies = [];
+        let npcs = [];
+        let treesPlaced = 0;
+        let treesFloating = 0;
+        let fps = 0;
+        let frameCount = 0;
+        let lastFpsUpdate = 0;
+        let errors = [];
+        let mode = 'build'; // 'build' or 'combat'
+        let lastModeChange = 0;
+        let modeChangeCooldown = 200;
+        let lastAttackTime = 0;
+        let attackCooldown = 500;
+        let lastGuardTime = 0;
+        let guardDuration = 1000;
+        let lastDamageTime = 0;
+        let damageCooldown = 500;
+        let lastSwordSwingTime = 0;
+        let swordSwingDuration = 200;
+        let lastCloudMove = 0;
+        let cloudSpeed = 0.001;
+        let clouds = [];
+        let dayNightCycle = 0;
+        let dayNightDuration = 120000; // 2 minutes
+        let skyColors = [
+            { sky: 0x87CEEB, horizon: 0x87CEEB }, // Day
+            { sky: 0x4169E1, horizon: 0x4682B4 }, // Evening
+            { sky: 0x000080, horizon: 0x000080 }, // Night
+            { sky: 0x4169E1, horizon: 0x4682B4 }  // Dawn
+        ];
+        let currentSkyColor = 0;
+        let lastSkyColorChange = 0;
+        let skyColorChangeInterval = 30000; // 30 seconds
+
+        // Demo mode variables
+        let demoMode = false;
+        let demoStep = '';
+        let jumpsDone = 0;
+        let swordSwings = 0;
+        let enemiesKilled = 0;
+        let blocksBroken = 0;
+        let blocksPlaced = 0;
+        let demoFrame = 0;
+        let demoStartTime = 0;
+
+        // Initialize the metrics object
+        window.__metrics = {
+            fps: 0,
+            blocks: 0,
+            biomes: { grass: 0, sand: 0, stone: 0, snow: 0, water: 0 },
+            treesPlaced: 0,
+            treesFloating: 0,
+            cameraInsideBlock: false,
+            skyPixelsVisible: false,
+            npcCount: 0,
+            enemyCount: 0,
+            playerHp: playerHp,
+            enemyHpTotal: 0,
+            errors: [],
+            demoMode: false,
+            demoStep: '',
+            jumpsDone: 0,
+            swordSwings: 0,
+            enemiesKilled: 0,
+            blocksBroken: 0,
+            blocksPlaced: 0
+        };
+
+        // Set up error handling
+        window.onerror = function(message, source, lineno, colno, error) {
+            errors.push(message);
+            window.__metrics.errors = errors;
+        };
+
+        // Initialize the scene
+        function init() {
+            // Check for demo mode
+            const urlParams = new URLSearchParams(window.location.search);
+            demoMode = urlParams.has('demo') && urlParams.get('demo') === '1';
+            
+            // Scene setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 20, 100);
+
+            // Camera setup - Spawn above highest block at center
+            const maxHeight = 15; // Maximum height of terrain
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            // Corrected: Place camera above terrain with sky visible
+            camera.position.set(0, maxHeight + 2, 0);
+            camera.lookAt(10, maxHeight + 1, 10);  // CONTROL: aim at the horizon, not the ground
+
+            // Renderer setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // Sky sphere with gradient
+            createSky();
+
+            // Materials
+            createMaterials();
+
+            // Lighting
+            createLighting();
+
+            // Create world
+            generateWorld();
+
+            // Create NPCs
+            createNPCs();
+
+            // Create enemies
+            createEnemies();
+
+            // Create sword
+            createSword();
+
+            // Event listeners
+            document.addEventListener('keydown', onKeyDown, false);
+            document.addEventListener('keyup', onKeyUp, false);
+            document.addEventListener('mousedown', onMouseDown, false);
+            document.addEventListener('mousemove', onMouseMove, false);
+            window.addEventListener('resize', onWindowResize, false);
+            document.body.addEventListener('click', function() {
+                document.body.requestPointerLock();
+            });
+
+            // Block selector
+            blockSelector = document.getElementById('blockSelector');
+            blockSelector.style.display = 'none';
+
+            // Held block
+            const heldBlockElement = document.getElementById('heldBlock');
+            heldBlockMesh = new THREE.Mesh(
+                new THREE.BoxGeometry(0.8, 0.8, 0.8),
+                materials[blockTypes[selectedBlockType].color]
+            );
+            heldBlockMesh.position.set(0, 0, 0);
+            scene.add(heldBlockMesh);
+            heldBlockElement.appendChild(renderer.domElement);
+
+            // Health bar
+            const healthBar = document.getElementById('healthBar');
+            const healthFill = document.getElementById('healthFill');
+            healthFill.style.width = '100%';
+
+            // Mode indicator
+            const modeIndicator = document.getElementById('modeIndicator');
+            modeIndicator.textContent = 'Mode: Build';
+
+            // Sword
+            const sword = document.getElementById('sword');
+            sword.style.display = 'none';
+
+            // Guard indicator
+            const guardIndicator = document.getElementById('guardIndicator');
+            guardIndicator.style.display = 'none';
+
+            // Start animation loop
+            animate();
+            
+            // Start demo if needed
+            if (demoMode) {
+                setTimeout(() => {
+                    demoStartTime = performance.now();
+                    // Start demo after 1 second
+                    setTimeout(() => {
+                        demoStep = 'start';
+                    }, 1000);
+                }, 0);
+            }
+        }
+
+        function createSky() {
+            // Create sky sphere with gradient shader
+            const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
+            skyMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    time: { value: 0 },
+                    skyColor: { value: new THREE.Color(0x87CEEB) },
+                    horizonColor: { value: new THREE.Color(0x87CEEB) }
+                },
+                vertexShader: `
+                    varying vec3 vWorldPosition;
+                    void main() {
+                        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+                        vWorldPosition = worldPosition.xyz;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 skyColor;
+                    uniform vec3 horizonColor;
+                    varying vec3 vWorldPosition;
+                    void main() {
+                        // Vertical gradient from sky to horizon
+                        float t = (vWorldPosition.y + 500.0) / 1000.0;
+                        vec3 color = mix(horizonColor, skyColor, t);
+                        gl_FragColor = vec4(color, 1.0);
+                    }
+                `,
+                side: THREE.BackSide,
+                transparent: true
+            });
+            
+            skySphere = new THREE.Mesh(skyGeometry, skyMaterial);
+            scene.add(skySphere);
+        }
+
+        function createMaterials() {
+            // Create materials for each block type
+            for (let i = 0; i < blockTypes.length; i++) {
+                const type = blockTypes[i];
+                materials[i] = new THREE.MeshLambertMaterial({ 
+                    color: type.color,
+                    vertexColors: true
+                });
+            }
+
+            // Water material
+            materials[5] = new THREE.MeshLambertMaterial({
+                color: 0x1E90FF,
+                transparent: true,
+                opacity: 0.6
+            });
+
+            // Enemy material
+            materials[6] = new THREE.MeshLambertMaterial({
+                color: 0xFF0000
+            });
+
+            // NPC material
+            materials[7] = new THREE.MeshLambertMaterial({
+                color: 0x00FF00
+            });
+        }
+
+        function createLighting() {
+            // Ambient light (cool)
+            ambientLight = new THREE.AmbientLight(0x606080, 0.4);
+            scene.add(ambientLight);
+
+            // Directional light (warm, low in sky)
+            directionalLight = new THREE.DirectionalLight(0xFFD700, 0.8);
+            directionalLight.position.set(1, 1, 0.5).normalize();
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 1024;
+            directionalLight.shadow.mapSize.height = 1024;
+            scene.add(directionalLight);
+        }
+
+        // Generate terrain using noise
+        function generateWorld() {
+            // Create terrain
+            for (let x = -worldHalfSize; x < worldHalfSize; x++) {
+                for (let z = -worldHalfSize; z < worldHalfSize; z++) {
+                    // Generate height using noise
+                    const height = Math.floor(5 + 5 * Math.sin(x * 0.1) * Math.cos(z * 0.1) + 
+                                            2 * Math.sin(x * 0.05) * Math.cos(z * 0.05));
+                    
+                    // Generate biome using second noise
+                    const biome = Math.sin(x * 0.03) * Math.cos(z * 0.03);
+                    
+                    // Determine block type based on height and biome
+                    let blockType = 0; // Default to grass
+                    if (height < waterLevel) {
+                        blockType = 5; // Water
+                    } else if (height < 5) {
+                        if (biome > 0.3) {
+                            blockType = 2; // Sand
+                        } else {
+                            blockType = 0; // Grass
+                        }
+                    } else if (height < 10) {
+                        blockType = 1; // Dirt
+                    } else if (height < 13) {
+                        blockType = 3; // Stone
+                    } else {
+                        blockType = 4; // Snow
+                    }
+                    
+                    // Place blocks from ground up to height
+                    for (let y = 0; y <= height; y++) {
+                        const key = `${x},${y},${z}`;
+                        let material;
+                        if (y === height) {
+                            // Top layer - use block type
+                            material = materials[blockType];
+                        } else {
+                            // Below top layer - use dirt
+                            material = materials[1];
+                        }
+                        world[key] = new THREE.Mesh(blockGeometry, material);
+                        world[key].position.set(x, y, z);
+                        world[key].castShadow = true;
+                        world[key].receiveShadow = true;
+                        scene.add(world[key]);
+                    }
+                    
+                    // Add water blocks if below water level
+                    if (height < waterLevel) {
+                        const key = `${x},${waterLevel},${z}`;
+                        if (!world[key]) {
+                            world[key] = new THREE.Mesh(blockGeometry, materials[5]);
+                            world[key].position.set(x, waterLevel, z);
+                            world[key].castShadow = true;
+                            world[key].receiveShadow = true;
+                            scene.add(world[key]);
+                        }
+                    }
+                }
+            }
+            
+            // Add some trees on grass columns
+            addTrees();
+            
+            // Add clouds
+            addClouds();
+        }
+
+        function addTrees() {
+            // Add trees only on grass blocks
+            for (let x = -worldHalfSize + 5; x < worldHalfSize - 5; x += 10) {
+                for (let z = -worldHalfSize + 5; z < worldHalfSize - 5; z += 10) {
+                    // Find the height at this position
+                    let height = 0;
+                    for (let y = 0; y < 20; y++) {
+                        const key = `${x},${y},${z}`;
+                        if (world[key]) {
+                            height = y;
+                        }
+                    }
+                    
+                    // Check if it's grass
+                    const key = `${x},${height},${z}`;
+                    if (world[key] && world[key].material.color.getHex() === 0x4CAF50) {
+                        // Place tree
+                        const treeHeight = 4 + Math.floor(Math.random() * 3);
+                        
+                        // Trunk
+                        for (let y = height; y < height + treeHeight; y++) {
+                            const trunkKey = `${x},${y},${z}`;
+                            world[trunkKey] = new THREE.Mesh(blockGeometry, materials[1]);
+                            world[trunkKey].position.set(x, y, z);
+                            world[trunkKey].castShadow = true;
+                            world[trunkKey].receiveShadow = true;
+                            scene.add(world[trunkKey]);
+                        }
+                        
+                        // Leaves
+                        const leafHeight = height + treeHeight;
+                        for (let dx = -2; dx <= 2; dx++) {
+                            for (let dz = -2; dz <= 2; dz++) {
+                                for (let dy = 0; dy <= 2; dy++) {
+                                    if (Math.abs(dx) + Math.abs(dz) + dy <= 3) {
+                                        const leafX = x + dx;
+                                        const leafY = leafHeight + dy;
+                                        const leafZ = z + dz;
+                                        const leafKey = `${leafX},${leafY},${leafZ}`;
+                                        if (!world[leafKey]) {
+                                            world[leafKey] = new THREE.Mesh(blockGeometry, materials[0]);
+                                            world[leafKey].position.set(leafX, leafY, leafZ);
+                                            world[leafKey].castShadow = true;
+                                            world[leafKey].receiveShadow = true;
+                                            scene.add(world[leafKey]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        treesPlaced++;
+                    }
+                }
+            }
+        }
+
+        function addClouds() {
+            // Add some clouds
+            for (let i = 0; i < 5; i++) {
+                const cloud = new THREE.Mesh(
+                    new THREE.BoxGeometry(3, 1, 3),
+                    new THREE.MeshLambertMaterial({
+                        color: 0xFFFFFF,
+                        transparent: true,
+                        opacity: 0.7
+                    })
+                );
+                cloud.position.set(
+                    Math.random() * worldSize - worldHalfSize,
+                    15 + Math.random() * 5,
+                    Math.random() * worldSize - worldHalfSize
+                );
+                cloud.castShadow = true;
+                cloud.receiveShadow = true;
+                scene.add(cloud);
+                clouds.push(cloud);
+            }
+        }
+
+        function createNPCs() {
+            // Create 4 passive NPCs
+            for (let i = 0; i < 4; i++) {
+                const npc = {
+                    position: new THREE.Vector3(
+                        Math.random() * worldSize - worldHalfSize,
+                        0,
+                        Math.random() * worldSize - worldHalfSize
+                    ),
+                    mesh: null,
+                    speed: 0.02,
+                    direction: new THREE.Vector3(
+                        Math.random() - 0.5,
+                        0,
+                        Math.random() - 0.5
+                    ),
+                    lastMoveTime: 0,
+                    moveInterval: 1000 + Math.random() * 2000
+                };
+                
+                // Create NPC body (2 blocks tall)
+                npc.mesh = new THREE.Group();
+                
+                // Body
+                const body = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.8, 1.5, 0.8),
+                    materials[7]
+                );
+                body.position.set(0, 0.75, 0);
+                body.castShadow = true;
+                body.receiveShadow = true;
+                npc.mesh.add(body);
+                
+                // Head
+                const head = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.6, 0.6, 0.6),
+                    materials[7]
+                );
+                head.position.set(0, 1.8, 0);
+                head.castShadow = true;
+                head.receiveShadow = true;
+                npc.mesh.add(head);
+                
+                scene.add(npc.mesh);
+                npcs.push(npc);
+            }
+        }
+
+        function createEnemies() {
+            // Create 3 hostile enemies
+            for (let i = 0; i < 3; i++) {
+                const enemy = {
+                    position: new THREE.Vector3(
+                        Math.random() * worldSize - worldHalfSize,
+                        0,
+                        Math.random() * worldSize - worldHalfSize
+                    ),
+                    mesh: null,
+                    hp: 10,
+                    maxHp: 10,
+                    speed: 0.03,
+                    lastAttackTime: 0,
+                    attackCooldown: 1000,
+                    lastDamageTime: 0,
+                    damageCooldown: 500,
+                    flashTime: 0,
+                    flashDuration: 200
+                };
+                
+                // Create enemy body (2 blocks tall)
+                enemy.mesh = new THREE.Group();
+                
+                // Body
+                const body = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.8, 1.5, 0.8),
+                    materials[6]
+                );
+                body.position.set(0, 0.75, 0);
+                body.castShadow = true;
+                body.receiveShadow = true;
+                enemy.mesh.add(body);
+                
+                // Head
+                const head = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.6, 0.6, 0.6),
+                    materials[6]
+                );
+                head.position.set(0, 1.8, 0);
+                head.castShadow = true;
+                head.receiveShadow = true;
+                enemy.mesh.add(head);
+                
+                scene.add(enemy.mesh);
+                enemies.push(enemy);
+            }
+        }
+
+        function createSword() {
+            swordMesh = new THREE.Mesh(
+                new THREE.BoxGeometry(0.2, 1, 0.2),
+                new THREE.MeshLambertMaterial({ color: 0xFFD700 })
+            );
+            swordMesh.position.set(0.5, 0.5, 0);
+            swordMesh.visible = false;
+            scene.add(swordMesh);
+        }
+
+        // Handle keyboard input
+        function onKeyDown(event) {
+            switch (event.keyCode) {
+                case 38: // up
+                case 87: // w
+                    moveForward = true;
+                    break;
+                case 40: // down
+                case 83: // s
+                    moveBackward = true;
+                    break;
+                case 37: // left
+                case 65: // a
+                    moveLeft = true;
+                    break;
+                case 39: // right
+                case 68: // d
+                    moveRight = true;
+                    break;
+                case 32: // space
+                    if (canJump === true) velocity.y = jumpStrength;
+                    canJump = false;
+                    break;
+                case 16: // shift
+                    isSprinting = true;
+                    break;
+                case 49: // 1
+                    selectedBlockType = 0;
+                    updateHeldBlock();
+                    break;
+                case 50: // 2
+                    selectedBlockType = 1;
+                    updateHeldBlock();
+                    break;
+                case 51: // 3
+                    selectedBlockType = 2;
+                    updateHeldBlock();
+                    break;
+                case 52: // 4
+                    selectedBlockType = 3;
+                    updateHeldBlock();
+                    break;
+                case 53: // 5
+                    selectedBlockType = 4;
+                    updateHeldBlock();
+                    break;
+                case 18: // right click
+                    // Guard
+                    isGuarding = true;
+                    lastGuardTime = performance.now();
+                    document.getElementById('guardIndicator').style.display = 'block';
+                    break;
+                case 32: // space
+                    if (canJump === true) velocity.y = jumpStrength;
+                    canJump = false;
+                    break;
+            }
+            
+            // Handle double tap for dodge
+            if (event.repeat) return;
+            const now = performance.now();
+            if (now - lastDodgeTime < 200) {
+                // Double tap detected
+                if (moveForward) {
+                    velocity.x += 0.5;
+                    velocity.z += 0.5;
+                } else if (moveBackward) {
+                    velocity.x -= 0.5;
+                    velocity.z -= 0.5;
+                } else if (moveLeft) {
+                    velocity.x -= 0.5;
+                    velocity.z += 0.5;
+                } else if (moveRight) {
+                    velocity.x += 0.5;
+                    velocity.z -= 0.5;
+                }
+                lastDodgeTime = 0;
+            } else {
+                lastDodgeTime = now;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch (event.keyCode) {
+                case 38: // up
+                case 87: // w
+                    moveForward = false;
+                    break;
+                case 40: // down
+                case 83: // s
+                    moveBackward = false;
+                    break;
+                case 37: // left
+                case 65: // a
+                    moveLeft = false;
+                    break;
+                case 39: // right
+                case 68: // d
+                    moveRight = false;
+                    break;
+                case 16: // shift
+                    isSprinting = false;
+                    break;
+                case 18: // right click
+                    // Stop guarding
+                    isGuarding = false;
+                    document.getElementById('guardIndicator').style.display = 'none';
+                    break;
+            }
+        }
+
+        // Handle mouse input
+        function onMouseDown(event) {
+            event.preventDefault();
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            const intersects = raycaster.intersectObjects(Object.values(world));
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                const block = intersect.object;
+                const key = `${Math.round(block.position.x)},${Math.round(block.position.y)},${Math.round(block.position.z)}`;
+
+                if (event.button === 0) { // Left click - remove block
+                    scene.remove(block);
+                    delete world[key];
+                    blocksBroken++;
+                } else if (event.button === 2) { // Right click - place block
+                    const normal = intersect.face.normal;
+                    const newPosition = new THREE.Vector3(
+                        Math.round(block.position.x + normal.x),
+                        Math.round(block.position.y + normal.y),
+                        Math.round(block.position.z + normal.z)
+                    );
+                    const newKey = `${newPosition.x},${newPosition.y},${newPosition.z}`;
+                    if (!world[newKey]) {
+                        world[newKey] = new THREE.Mesh(blockGeometry, materials[selectedBlockType]);
+                        world[newKey].position.copy(newPosition);
+                        world[newKey].castShadow = true;
+                        world[newKey].receiveShadow = true;
+                        scene.add(world[newKey]);
+                        blocksPlaced++;
+                    }
+                }
+            }
+            
+            // Handle sword swing
+            if (event.button === 0 && !swordSwinging) {
+                swordSwinging = true;
+                lastSwordSwingTime = performance.now();
+                swordMesh.visible = true;
+                swordMesh.rotation.z = 0;
+                swordMesh.position.set(0.5, 0.5, 0);
+                
+                // Attack enemies
+                const attackRange = 3;
+                for (let i = 0; i < enemies.length; i++) {
+                    const enemy = enemies[i];
+                    const distance = camera.position.distanceTo(enemy.position);
+                    if (distance < attackRange) {
+                        enemy.hp -= 3;
+                        enemy.flashTime = performance.now();
+                        if (enemy.hp <= 0) {
+                            scene.remove(enemy.mesh);
+                            enemies.splice(i, 1);
+                            i--;
+                            enemiesKilled++;
+                        }
+                        swordSwings++;
+                    }
+                }
+            }
+        }
+
+        function onMouseMove(event) {
+            if (document.pointerLockElement === document.body) {
+                camera.rotation.y -= event.movementX * 0.002;
+                camera.rotation.x -= event.movementY * 0.002;
+                camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x));
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function updateHeldBlock() {
+            heldBlockMesh.material = materials[selectedBlockType];
+        }
+
+        // Demo mode logic
+        function runDemo() {
+            if (!demoMode) return;
+            
+            const now = performance.now();
+            const elapsed = now - demoStartTime;
+            demoFrame = Math.floor(elapsed / 16); // Approximate frame count
+            
+            // Demo steps
+            if (demoStep === 'start') {
+                demoStep = 'walk';
+                moveForward = true;
+                moveLeft = true;
+                moveRight = false;
+                moveBackward = false;
+            } else if (demoStep === 'walk' && demoFrame > 100) {
+                demoStep = 'jump1';
+                canJump = true;
+                velocity.y = jumpStrength;
+                jumpsDone++;
+            } else if (demoStep === 'jump1' && demoFrame > 150) {
+                demoStep = 'jump2';
+                canJump = true;
+                velocity.y = jumpStrength;
+                jumpsDone++;
+            } else if (demoStep === 'jump2' && demoFrame > 200) {
+                demoStep = 'sprint';
+                isSprinting = true;
+            } else if (demoStep === 'sprint' && demoFrame > 300) {
+                demoStep = 'walk_to_enemy';
+                moveForward = false;
+                isSprinting = false;
+                moveLeft = false;
+                moveRight = true;
+                moveBackward = false;
+            } else if (demoStep === 'walk_to_enemy' && demoFrame > 400) {
+                demoStep = 'attack_enemy';
+                moveForward = false;
+                moveLeft = false;
+                moveRight = false;
+                moveBackward = false;
+                // Simulate sword swing
+                if (!swordSwinging) {
+                    swordSwinging = true;
+                    lastSwordSwingTime = performance.now();
+                    swordMesh.visible = true;
+                    swordMesh.rotation.z = 0;
+                    swordMesh.position.set(0.5, 0.5, 0);
+                    swordSwings++;
+                    // Attack enemies
+                    const attackRange = 3;
+                    for (let i = 0; i < enemies.length; i++) {
+                        const enemy = enemies[i];
+                        const distance = camera.position.distanceTo(enemy.position);
+                        if (distance < attackRange) {
+                            enemy.hp -= 3;
+                            enemy.flashTime = performance.now();
+                            if (enemy.hp <= 0) {
+                                scene.remove(enemy.mesh);
+                                enemies.splice(i, 1);
+                                i--;
+                                enemiesKilled++;
+                            }
+                        }
+                    }
+                }
+            } else if (demoStep === 'attack_enemy' && demoFrame > 450) {
+                demoStep = 'guard';
+                isGuarding = true;
+                lastGuardTime = performance.now();
+                document.getElementById('guardIndicator').style.display = 'block';
+            } else if (demoStep === 'guard' && demoFrame > 500) {
+                demoStep = 'dodge';
+                // Simulate dodge
+                velocity.x += 0.5;
+                velocity.z += 0.5;
+            } else if (demoStep === 'dodge' && demoFrame > 550) {
+                demoStep = 'break_block';
+                // Break a block
+                const blockPos = new THREE.Vector3(5, 1, 5);
+                const key = `${Math.round(blockPos.x)},${Math.round(blockPos.y)},${Math.round(blockPos.z)}`;
+                if (world[key]) {
+                    scene.remove(world[key]);
+                    delete world[key];
+                    blocksBroken++;
+                }
+            } else if (demoStep === 'break_block' && demoFrame > 600) {
+                demoStep = 'place_block';
+                // Place a block
+                const blockPos = new THREE.Vector3(5, 2, 5);
+                const key = `${Math.round(blockPos.x)},${Math.round(blockPos.y)},${Math.round(blockPos.z)}`;
+                if (!world[key]) {
+                    world[key] = new THREE.Mesh(blockGeometry, materials[selectedBlockType]);
+                    world[key].position.copy(blockPos);
+                    world[key].castShadow = true;
+                    world[key].receiveShadow = true;
+                    scene.add(world[key]);
+                    blocksPlaced++;
+                }
+            } else if (demoStep === 'place_block' && demoFrame > 650) {
+                demoStep = 'end';
+                moveForward = false;
+                moveLeft = false;
+                moveRight = false;
+                moveBackward = false;
+                isSprinting = false;
+                isGuarding = false;
+                document.getElementById('guardIndicator').style.display = 'none';
+            }
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+            
+            // Update FPS
+            frameCount++;
+            if (time - lastFpsUpdate >= 1000) {
+                fps = frameCount;
+                frameCount = 0;
+                lastFpsUpdate = time;
+            }
+            
+            // Update metrics
+            if (time - lastFpsUpdate >= 3000) {
+                updateMetrics();
+            }
+
+            // Update sky shader
+            if (skyMaterial) {
+                skyMaterial.uniforms.time.value = time * 0.001;
+            }
+
+            // Update day/night cycle
+            dayNightCycle = (time % dayNightDuration) / dayNightDuration;
+            const skyColorIndex = Math.floor(dayNightCycle * 4) % 4;
+            if (skyColorIndex !== currentSkyColor) {
+                currentSkyColor = skyColorIndex;
+                skyMaterial.uniforms.skyColor.value = new THREE.Color(skyColors[currentSkyColor].sky);
+                skyMaterial.uniforms.horizonColor.value = new THREE.Color(skyColors[currentSkyColor].horizon);
+            }
+
+            // Update clouds
+            const now = performance.now();
+            if (now - lastCloudMove > 100) {
+                for (let i = 0; i < clouds.length; i++) {
+                    const cloud = clouds[i];
+                    cloud.position.x += cloudSpeed;
+                    if (cloud.position.x > worldHalfSize + 5) {
+                        cloud.position.x = -worldHalfSize - 5;
+                    }
+                }
+                lastCloudMove = now;
+            }
+
+            // Apply gravity
+            velocity.y -= gravity * delta;
+
+            // Movement
+            let speed = moveSpeed * delta;
+            if (isSprinting) speed *= 2;
+            
+            if (moveForward) velocity.z -= speed;
+            if (moveBackward) velocity.z += speed;
+            if (moveLeft) velocity.x -= speed;
+            if (moveRight) velocity.x += speed;
+
+            // Apply velocity
+            camera.position.x += velocity.x;
+            camera.position.y += velocity.y;
+            camera.position.z += velocity.z;
+
+            // Simple collision with ground - ensure player stays on top of terrain
+            const playerX = Math.round(camera.position.x);
+            const playerZ = Math.round(camera.position.z);
+            const playerY = camera.position.y;
+            
+            // Find the highest block at player position
+            let highestY = -1;
+            for (let y = 0; y < 20; y++) {
+                const key = `${playerX},${y},${playerZ}`;
+                if (world[key]) {
+                    highestY = y;
+                }
+            }
+            
+            // If player is below the highest block, put them on top
+            if (highestY !== -1) {
+                const groundLevel = highestY + 1; // Player should stand on top of block
+                if (playerY < groundLevel) {
+                    camera.position.y = groundLevel;
+                    velocity.y = 0;
+                    canJump = true;
+                }
+            }
+
+            // Reset velocity
+            velocity.x *= 0.9;
+            velocity.z *= 0.9;
+
+            // Update block selector
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(Object.values(world));
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                const block = intersect.object;
+                const blockPos = block.position;
+                blockSelector.style.display = 'block';
+                blockSelector.style.left = (window.innerWidth/2 + blockPos.x * 20 - 10) + 'px';
+                blockSelector.style.top = (window.innerHeight/2 + blockPos.z * 20 - 10) + 'px';
+                blockSelector.style.width = '20px';
+                blockSelector.style.height = '20px';
+            } else {
+                blockSelector.style.display = 'none';
+            }
+
+            // Update held block position
+            heldBlockMesh.position.set(
+                window.innerWidth/2 - 40,
+                window.innerHeight - 40,
+                0
+            );
+
+            // Update sword
+            if (swordSwinging) {
+                const elapsed = performance.now() - lastSwordSwingTime;
+                if (elapsed < swordSwingDuration) {
+                    swordMesh.rotation.z = Math.sin(elapsed / 100) * 0.5;
+                } else {
+                    swordSwinging = false;
+                    swordMesh.visible = false;
+                }
+            }
+
+            // Update NPCs
+            const npcMoveInterval = 1000;
+            for (let i = 0; i < npcs.length; i++) {
+                const npc = npcs[i];
+                if (now - npc.lastMoveTime > npc.moveInterval) {
+                    // Change direction
+                    npc.direction.set(
+                        Math.random() - 0.5,
+                        0,
+                        Math.random() - 0.5
+                    );
+                    npc.lastMoveTime = now;
+                }
+                
+                // Move NPC
+                npc.position.add(npc.direction.clone().multiplyScalar(npc.speed));
+                
+                // Keep NPC within world bounds
+                npc.position.x = Math.max(-worldHalfSize + 1, Math.min(worldHalfSize - 1, npc.position.x));
+                npc.position.z = Math.max(-worldHalfSize + 1, Math.min(worldHalfSize - 1, npc.position.z));
+                
+                // Update mesh position
+                npc.mesh.position.copy(npc.position);
+            }
+
+            // Update enemies
+            for (let i = 0; i < enemies.length; i++) {
+                const enemy = enemies[i];
+                
+                // Check if enemy is flashing
+                if (enemy.flashTime > 0 && now - enemy.flashTime > enemy.flashDuration) {
+                    enemy.flashTime = 0;
+                }
+                
+                // Path toward player if within range
+                const distanceToPlayer = camera.position.distanceTo(enemy.position);
+                if (distanceToPlayer < 20) {
+                    const direction = new THREE.Vector3();
+                    direction.subVectors(camera.position, enemy.position).normalize();
+                    enemy.position.add(direction.multiplyScalar(enemy.speed));
+                    
+                    // Update mesh position
+                    enemy.mesh.position.copy(enemy.position);
+                }
+                
+                // Attack player if close
+                if (distanceToPlayer < 1.5 && now - enemy.lastAttackTime > enemy.attackCooldown) {
+                    if (now - lastDamageTime > damageCooldown) {
+                        playerHp -= isGuarding ? 1 : 2;
+                        lastDamageTime = now;
+                        document.getElementById('healthFill').style.width = (playerHp / 20 * 100) + '%';
+                    }
+                    enemy.lastAttackTime = now;
+                }
+            }
+
+            // Update sword position
+            if (swordSwinging) {
+                swordMesh.position.set(
+                    camera.position.x + 0.5,
+                    camera.position.y + 0.5,
+                    camera.position.z
+                );
+            }
+
+            // Update guard indicator
+            if (isGuarding && now - lastGuardTime > guardDuration) {
+                isGuarding = false;
+                document.getElementById('guardIndicator').style.display = 'none';
+            }
+
+            // Run demo logic
+            runDemo();
+
+            // Update metrics
+            updateMetrics();
+
+            renderer.render(scene, camera);
+            prevTime = time;
+        }
+
+        function updateMetrics() {
+            // Count blocks
+            let blockCount = 0;
+            const biomeCounts = { grass: 0, sand: 0, stone: 0, snow: 0, water: 0 };
+            
+            for (const key in world) {
+                blockCount++;
+                const block = world[key];
+                const color = block.material.color.getHex();
+                
+                if (color === 0x4CAF50) biomeCounts.grass++;
+                else if (color === 0xF4A460) biomeCounts.sand++;
+                else if (color === 0x808080) biomeCounts.stone++;
+                else if (color === 0xFFFFFF) biomeCounts.snow++;
+                else if (color === 0x1E90FF) biomeCounts.water++;
+            }
+            
+            // Count floating trees
+            treesFloating = 0;
+            for (let x = -worldHalfSize; x < worldHalfSize; x++) {
+                for (let z = -worldHalfSize; z < worldHalfSize; z++) {
+                    let height = 0;
+                    for (let y = 0; y < 20; y++) {
+                        const key = `${x},${y},${z}`;
+                        if (world[key]) {
+                            height = y;
+                        }
+                    }
+                    
+                    // Check if trunk base has no solid block beneath it
+                    const trunkBaseKey = `${x},${height - 1},${z}`;
+                    if (!world[trunkBaseKey]) {
+                        treesFloating++;
+                    }
+                }
+            }
+            
+            // Check if camera is inside a block
+            const cameraX = Math.round(camera.position.x);
+            const cameraY = Math.round(camera.position.y);
+            const cameraZ = Math.round(camera.position.z);
+            const cameraKey = `${cameraX},${cameraY},${cameraZ}`;
+            const cameraInsideBlock = world[cameraKey] !== undefined;
+            
+            // Check if sky is visible
+            const skyPixelsVisible = camera.position.y > 10;
+            
+            // Update metrics object
+            window.__metrics = {
+                fps: fps,
+                blocks: blockCount,
+                biomes: biomeCounts,
+                treesPlaced: treesPlaced,
+                treesFloating: treesFloating,
+                cameraInsideBlock: cameraInsideBlock,
+                skyPixelsVisible: skyPixelsVisible,
+                npcCount: npcs.length,
+                enemyCount: enemies.length,
+                playerHp: playerHp,
+                enemyHpTotal: enemies.reduce((total, enemy) => total + enemy.hp, 0),
+                errors: errors,
+                demoMode: demoMode,
+                demoStep: demoStep,
+                jumpsDone: jumpsDone,
+                swordSwings: swordSwings,
+                enemiesKilled: enemiesKilled,
+                blocksBroken: blocksBroken,
+                blocksPlaced: blocksPlaced
+            };
+            
+            // Log metrics
+            console.log("METRICS " + JSON.stringify(window.__metrics));
+        }
+
+        // Start the application
+        init();
+    </script>
+</body>
+</html>

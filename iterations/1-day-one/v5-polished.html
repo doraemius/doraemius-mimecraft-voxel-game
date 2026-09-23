@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Minecraft-Style Voxel World</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: monospace;
+        }
+        #info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            font-size: 14px;
+            z-index: 10;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            margin-left: -10px;
+            margin-top: -10px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255,255,255,0.8);
+        }
+        #crosshair::before {
+            width: 2px;
+            height: 20px;
+            left: 9px;
+            top: 0;
+        }
+        #crosshair::after {
+            width: 20px;
+            height: 2px;
+            left: 0;
+            top: 9px;
+        }
+        #vignette {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 5;
+            background: radial-gradient(circle at center, transparent 0%, rgba(0,0,0,0.7) 70%);
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <div id="crosshair"></div>
+    <div id="info">
+        WASD: Move | Mouse: Look | Space: Jump | Left Click: Remove | Right Click: Place
+    </div>
+    <div id="vignette"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Main variables
+        let scene, camera, renderer, controls;
+        let world = {};
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+        let clock = new THREE.Clock();
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        let canJump = true;
+        let velocity = new THREE.Vector3();
+        let prevTime = performance.now();
+        let worldSize = 24;
+        let blockSize = 1;
+        let worldHalfSize = worldSize / 2;
+        let gravity = 9.8;
+        let jumpStrength = 5;
+        let moveSpeed = 5;
+        let blockGeometry = new THREE.BoxGeometry(1, 1, 1);
+        let grassMaterial, dirtMaterial;
+        let skyMaterial;
+        let skySphere;
+        let ambientLight, directionalLight;
+
+        // Initialize the scene
+        function init() {
+            // Scene setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 20, 100);
+
+            // Camera setup - Spawn above highest block at center
+            const maxHeight = 8; // Maximum height of terrain
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            // Corrected: Place camera above terrain with sky visible
+            camera.position.set(0, maxHeight + 2, 0);
+            camera.lookAt(10, maxHeight + 1, 10);  // CONTROL: aim at the horizon, not the ground
+
+            // Renderer setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // Sky sphere with gradient
+            createSky();
+
+            // Materials
+            createMaterials();
+
+            // Lighting
+            createLighting();
+
+            // Create world
+            generateWorld();
+
+            // Event listeners
+            document.addEventListener('keydown', onKeyDown, false);
+            document.addEventListener('keyup', onKeyUp, false);
+            document.addEventListener('mousedown', onMouseDown, false);
+            document.addEventListener('mousemove', onMouseMove, false);
+            window.addEventListener('resize', onWindowResize, false);
+            document.body.addEventListener('click', function() {
+                document.body.requestPointerLock();
+            });
+
+            // Start animation loop
+            animate();
+        }
+
+        function createSky() {
+            // Create sky sphere with gradient shader
+            const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
+            skyMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    time: { value: 0 },
+                    skyColor: { value: new THREE.Color(0x87CEEB) },
+                    horizonColor: { value: new THREE.Color(0x87CEEB) }
+                },
+                vertexShader: `
+                    varying vec3 vWorldPosition;
+                    void main() {
+                        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+                        vWorldPosition = worldPosition.xyz;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 skyColor;
+                    uniform vec3 horizonColor;
+                    varying vec3 vWorldPosition;
+                    void main() {
+                        // Vertical gradient from sky to horizon
+                        float t = (vWorldPosition.y + 500.0) / 1000.0;
+                        vec3 color = mix(horizonColor, skyColor, t);
+                        gl_FragColor = vec4(color, 1.0);
+                    }
+                `,
+                side: THREE.BackSide,
+                transparent: true
+            });
+            
+            skySphere = new THREE.Mesh(skyGeometry, skyMaterial);
+            scene.add(skySphere);
+        }
+
+        function createMaterials() {
+            // Grass material with variation
+            grassMaterial = new THREE.MeshLambertMaterial({ 
+                color: 0x4CAF50,
+                vertexColors: true
+            });
+            
+            // Dirt material
+            dirtMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            
+            // Create a custom material for grass with per-block variation
+            const grassVertexColors = new THREE.MeshLambertMaterial({
+                vertexColors: true
+            });
+            
+            // Create a custom material for grass with variation
+            const grassShaderMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    time: { value: 0 },
+                    lightDirection: { value: new THREE.Vector3(1, 1, 0.5).normalize() },
+                    ambientLight: { value: 0.4 }
+                },
+                vertexShader: `
+                    varying vec3 vNormal;
+                    varying vec3 vPosition;
+                    void main() {
+                        vNormal = normalize(normalMatrix * normal);
+                        vPosition = position;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 lightDirection;
+                    uniform float ambientLight;
+                    varying vec3 vNormal;
+                    varying vec3 vPosition;
+                    void main() {
+                        // Simple per-block variation
+                        float variation = sin(vPosition.x * 0.5) * sin(vPosition.z * 0.5) * 0.1;
+                        vec3 baseColor = vec3(0.4 + variation, 0.8 + variation, 0.4 + variation);
+                        
+                        // Darken side faces
+                        vec3 normal = normalize(vNormal);
+                        float diffuse = max(dot(normal, lightDirection), 0.0);
+                        vec3 color = baseColor * (diffuse * 0.7 + ambientLight * 0.3);
+                        
+                        // Darken bottom faces more
+                        if (normal.y < 0.1) {
+                            color *= 0.6;
+                        }
+                        
+                        gl_FragColor = vec4(color, 1.0);
+                    }
+                `,
+                side: THREE.DoubleSide
+            });
+            
+            // Use the custom grass material for grass blocks
+            grassMaterial = grassShaderMaterial;
+        }
+
+        function createLighting() {
+            // Ambient light (cool)
+            ambientLight = new THREE.AmbientLight(0x606080, 0.4);
+            scene.add(ambientLight);
+
+            // Directional light (warm, low in sky)
+            directionalLight = new THREE.DirectionalLight(0xFFD700, 0.8);
+            directionalLight.position.set(1, 1, 0.5).normalize();
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 1024;
+            directionalLight.shadow.mapSize.height = 1024;
+            scene.add(directionalLight);
+        }
+
+        // Generate terrain using noise
+        function generateWorld() {
+            // Create terrain
+            for (let x = -worldHalfSize; x < worldHalfSize; x++) {
+                for (let z = -worldHalfSize; z < worldHalfSize; z++) {
+                    // Simple noise function
+                    const height = Math.floor(5 + 3 * Math.sin(x * 0.1) * Math.cos(z * 0.1));
+                    for (let y = 0; y <= height; y++) {
+                        const key = `${x},${y},${z}`;
+                        let material;
+                        if (y === height) {
+                            material = grassMaterial;
+                        } else {
+                            material = dirtMaterial;
+                        }
+                        world[key] = new THREE.Mesh(blockGeometry, material);
+                        world[key].position.set(x, y, z);
+                        world[key].castShadow = true;
+                        world[key].receiveShadow = true;
+                        scene.add(world[key]);
+                    }
+                }
+            }
+            
+            // Add some trees on high ground
+            addTrees();
+        }
+
+        function addTrees() {
+            const treePositions = [
+                {x: 5, z: 5},
+                {x: -5, z: 5},
+                {x: 5, z: -5},
+                {x: -5, z: -5},
+                {x: 10, z: 10},
+                {x: -10, z: -10}
+            ];
+            
+            treePositions.forEach(pos => {
+                const height = 8 + Math.floor(3 * Math.sin(pos.x * 0.1) * Math.cos(pos.z * 0.1));
+                
+                // Trunk
+                for (let y = height; y < height + 4; y++) {
+                    const key = `${pos.x},${y},${pos.z}`;
+                    world[key] = new THREE.Mesh(blockGeometry, new THREE.MeshLambertMaterial({ color: 0x8B4513 }));
+                    world[key].position.set(pos.x, y, pos.z);
+                    world[key].castShadow = true;
+                    world[key].receiveShadow = true;
+                    scene.add(world[key]);
+                }
+                
+                // Leaves
+                for (let dx = -2; dx <= 2; dx++) {
+                    for (let dz = -2; dz <= 2; dz++) {
+                        for (let dy = 0; dy <= 2; dy++) {
+                            if (Math.abs(dx) + Math.abs(dz) + dy <= 3) {
+                                const leafX = pos.x + dx;
+                                const leafY = height + 4 + dy;
+                                const leafZ = pos.z + dz;
+                                const key = `${leafX},${leafY},${leafZ}`;
+                                if (!world[key]) {
+                                    world[key] = new THREE.Mesh(blockGeometry, new THREE.MeshLambertMaterial({ color: 0x228B22 }));
+                                    world[key].position.set(leafX, leafY, leafZ);
+                                    world[key].castShadow = true;
+                                    world[key].receiveShadow = true;
+                                    scene.add(world[key]);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Handle keyboard input
+        function onKeyDown(event) {
+            switch (event.keyCode) {
+                case 38: // up
+                case 87: // w
+                    moveForward = true;
+                    break;
+                case 40: // down
+                case 83: // s
+                    moveBackward = true;
+                    break;
+                case 37: // left
+                case 65: // a
+                    moveLeft = true;
+                    break;
+                case 39: // right
+                case 68: // d
+                    moveRight = true;
+                    break;
+                case 32: // space
+                    if (canJump === true) velocity.y = jumpStrength;
+                    canJump = false;
+                    break;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch (event.keyCode) {
+                case 38: // up
+                case 87: // w
+                    moveForward = false;
+                    break;
+                case 40: // down
+                case 83: // s
+                    moveBackward = false;
+                    break;
+                case 37: // left
+                case 65: // a
+                    moveLeft = false;
+                    break;
+                case 39: // right
+                case 68: // d
+                    moveRight = false;
+                    break;
+            }
+        }
+
+        // Handle mouse input
+        function onMouseDown(event) {
+            event.preventDefault();
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            const intersects = raycaster.intersectObjects(Object.values(world));
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                const block = intersect.object;
+                const key = `${Math.round(block.position.x)},${Math.round(block.position.y)},${Math.round(block.position.z)}`;
+
+                if (event.button === 0) { // Left click - remove block
+                    scene.remove(block);
+                    delete world[key];
+                } else if (event.button === 2) { // Right click - place block
+                    const normal = intersect.face.normal;
+                    const newPosition = new THREE.Vector3(
+                        Math.round(block.position.x + normal.x),
+                        Math.round(block.position.y + normal.y),
+                        Math.round(block.position.z + normal.z)
+                    );
+                    const newKey = `${newPosition.x},${newPosition.y},${newPosition.z}`;
+                    if (!world[newKey]) {
+                        world[newKey] = new THREE.Mesh(blockGeometry, grassMaterial);
+                        world[newKey].position.copy(newPosition);
+                        world[newKey].castShadow = true;
+                        world[newKey].receiveShadow = true;
+                        scene.add(world[newKey]);
+                    }
+                }
+            }
+        }
+
+        function onMouseMove(event) {
+            if (document.pointerLockElement === document.body) {
+                camera.rotation.y -= event.movementX * 0.002;
+                camera.rotation.x -= event.movementY * 0.002;
+                camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x));
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+            
+            // Update sky shader
+            if (skyMaterial) {
+                skyMaterial.uniforms.time.value = time * 0.001;
+            }
+
+            // Apply gravity
+            velocity.y -= gravity * delta;
+
+            // Movement
+            const speed = moveSpeed * delta;
+            if (moveForward) velocity.z -= speed;
+            if (moveBackward) velocity.z += speed;
+            if (moveLeft) velocity.x -= speed;
+            if (moveRight) velocity.x += speed;
+
+            // Apply velocity
+            camera.position.x += velocity.x;
+            camera.position.y += velocity.y;
+            camera.position.z += velocity.z;
+
+            // Simple collision with ground - ensure player stays on top of terrain
+            const playerX = Math.round(camera.position.x);
+            const playerZ = Math.round(camera.position.z);
+            const playerY = camera.position.y;
+            
+            // Find the highest block at player position
+            let highestY = -1;
+            for (let y = 0; y < 20; y++) {
+                const key = `${playerX},${y},${playerZ}`;
+                if (world[key]) {
+                    highestY = y;
+                }
+            }
+            
+            // If player is below the highest block, put them on top
+            if (highestY !== -1) {
+                const groundLevel = highestY + 1; // Player should stand on top of block
+                if (playerY < groundLevel) {
+                    camera.position.y = groundLevel;
+                    velocity.y = 0;
+                    canJump = true;
+                }
+            }
+
+            // Reset velocity
+            velocity.x *= 0.9;
+            velocity.z *= 0.9;
+
+            renderer.render(scene, camera);
+            prevTime = time;
+        }
+
+        // Start the application
+        init();
+    </script>
+</body>
+</html>
