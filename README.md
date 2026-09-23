@@ -3,6 +3,8 @@
 A Minecraft-style voxel game in one HTML file, written by a local AI: **Qwen3-Coder-30B-A3B**
 on a single RTX 3080, over more than 40 prompts, one feature at a time. Three.js, no build step.
 
+**Watch the video:** [Qwen3 Coder 30B Wrote a Minecraft-Style Game on One GPU — 40+ Prompts](https://www.youtube.com/watch?v=5M1_bqp6Bo0)
+
 ![The final game in demo mode: a lake, trees and a wandering character](media/hero.png)
 
 ## Play it
